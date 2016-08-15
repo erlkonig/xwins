@@ -1,0 +1,88 @@
+.\" @(#)user.1 2.0 20.Aug.1998 Talisman
+.ds p xwins
+.TH user 1 "2012-02-06" "Group Talisman" "Talisman User Commands"
+.SH NAME
+xwins \- View one or more X windows in a zoomable OpenGL viewer.
+
+.SH SYNOPSIS
+.LP
+\fB\*p\fP
+[
+[ \fB\--help\fP ]
+]
+[ \fB\--debug \fP ]
+[ \fB\--rot \fIfxr/yr/zr\fP ]
+[ \fB\--xyz \fIfx/y/z\fP ]
+[ \fB\--port \fP ]
+[ \fB\--display \fIdisplay\fP ]
+[ \fIwindow-id\fP ]...
+.SH DESCRIPTION
+.LP
+.B \*p
+is a utility intended to enable use of a Spaceball to manipulate zoomable
+extra views of one or more current X windows using OpenGL.
+.LP
+Several Spaceball buttons have special uses:
+.LP
+.B 1
+add a X window (which is selected with mouse button 1) to \*p.
+.LP
+.B 2
+clear all windows from \*p.
+.LP
+.B 3
+toggle from full-view mode to correct-aspect mode.
+.LP
+.B 5
+snap back to the initial viewpoint.
+.LP
+.B 10
+(button 5, held, on the SpacePilot PRO)
+toggle window animation.
+.SH EXAMPLES
+.LP
+To have \*p default to making a window on the current display, and
+allow the user to select the window to view in it with the mouse:
+.IP
+.B \*p
+.LP
+To display a specific window by its X window ID:
+.IP
+.B \*p
+.I window-id
+.LP
+To bring up a window on the current display, and a second on another 
+display (noting that the mapped X windows probably won't be visible):
+.IP
+.B \*p --display
+.I other-display
+.B \--port --display
+.I this-display
+.B \--port
+.SH "SEE ALSO"
+.BR xmag(1)
+.SH COPYRIGHT
+.PP
+Copyright ©2012, 2016 C. Alex. North\-Keys
+.PP
+Author's credit must be retained in binaries, manual entries, sources, and
+derived code.
+.PP
+This software may be freely copied, distributed, compiled, or altered,
+provided the above restrictions are observed, except where otherwise noted
+ below.
+.PP
+This software is provided "as is", with no warranty, guarantee, support,
+maintenance, update schedule, claims to fitness for any purpose, or
+anything else from the author or any other physical or legal entity.
+.PP
+See the source code for additional copyright and limitation information.
+.PP
+The 3Dconnexion xdevelop driver library used by \*p is governed by a
+License Grant allowing authors to distribute those files but does not
+appear to grant right of redistribution to those receiving the files.  To
+acquire that right, see:
+http://www.3dconnexion.com/service/software-developer/licence-agreement.html
+.PP
+.SH AUTHOR
+

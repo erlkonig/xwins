@@ -1,0 +1,718 @@
+#!/usr/bin/perl
+#  c2guide - produce template guide pages from C code.
+#  
+#  Read in data from .c file
+#  Add any additional fields from related guide files, if implemented.
+#  generate .html documentation (or docbook docs, etc.)
+#  
+#  Author: Christopher Alexander North-Keys
+#  Incept: 2001 
+#  Update: 2007-10-05 02:41:00 CDT (Oct Fri) formatting, static, etc.
+
+use strict;
+use POSIX qw(strftime);
+
+my $target_htmldir_default = 0;
+my $target_mandir_default = 0;
+
+# definition of section order.
+my @Sections = ('function', 'template',
+				'availability',
+				'purpose',  # one liner
+				'prototype', 'synopsis',
+				'param', 'parameters',
+				'description',
+				'prereq', 'prerequisites',
+				'include',
+				'effect', 'effects', 'return', 'returns', 'errors',
+				'example',
+				'related',
+				'caveat', 'note', 'caveats', 'notes',# bugs, warnings, etc.
+				'enhance',
+				'file',
+				'history',
+				);
+
+my %SectionNameInstead = ('param'  => 'parameters',
+						  'prereq' => 'prerequisites',
+						  );
+
+my %SectionDetails = (
+	'prototype'  => [ 'preformatted' ],
+	'synopsis'   => [ 'preformatted' ],
+	'parameters' => [ 'first_is_name' ],
+	'example'    => [ 'preformatted', 'man:indented' ],
+	'related'    => [ 'first_is_function' ],
+);
+
+my %availability =
+	('public' => '',
+	 'deprecated' => ('DEPRECATED: '
+					  .'This function is an obsolete or development-only call '
+					  .'and should not be construed to be part of the '
+					  .'published API. '
+					  .'It is only documented for reference purposes.'),
+	 'private' => ('PRIVATE: '
+				   .'This function is a private, internal library call; '
+				   .'see the section <a href="#related">RELATED</a> to check '
+				   .'for public interfaces related to this function.'),
+	 'static' => ('STATIC: '
+				  .'This function is formally restricted to '
+				  .'use from within its compilation '
+				  .'unit, and is not part of the exported API.'),
+	 );
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - internal form funcs.
+# A hash of: arrays for each section in the document for a function, etc.
+# Each array in the hash is accessed by section name (such as PROTOTYPE)
+# Each array item is instance of the field being used in the description,
+#    such as ":related: .... " constitutes one instance, and the "..."
+#    part is what is stored as an item in the array.
+# Order within an array is significant.
+# The following functions create and use hash references for a single doc.
+
+# create the initial docs structure.
+sub DocNew       # -- \%doc
+{
+	my %docs;
+	return \%docs;
+}
+
+# add an item.
+sub DocAdd
+{
+	my ($docs_ref, $page, $section, $content) = @_;
+#	push( @ {$ {%{$docs_ref}} {$page}{$section} }, $content);  # broke in 2013
+	push( @ {$docs_ref->{$page}->{$section}},  $content);
+	my %docs = %{$docs_ref};
+#	print "docs: " . %docs . "\n";
+#	print "page: " . $page    . "/" . $docs{$page} . "\n";
+#	print "sect: " . $section . "/" . $docs{$page}{$section} . "\n";
+#	print "cont: " . $content . "/" . $docs{$page}{$section}[0] . "\n";
+}
+
+# return a list of docs (same naming convention as man pages)
+sub DocPages
+{
+	my ($docs_ref) = @_;
+	return sort(keys(%{$docs_ref}));
+}
+
+sub DocPageSections
+{
+	my ($docs_ref, $page) = @_; my %docs = %{$docs_ref};
+	if(defined($docs{$page})) {
+		my %pagedata = %{$docs{$page}};
+#		print("calling OrderBySectionName\n");
+#		map { print "$_\n"; } keys(%pagedata);
+		my @pages = sort OrderBySectionName (keys(%pagedata));
+		return @pages;
+	}
+	return ();
+}
+
+sub DocPageExists
+{
+	my ($docs_ref, $page) = @_; my %docs = %{$docs_ref};
+	if(defined($docs{$page})) {
+		return 1;
+	}
+	return 0;
+}
+
+sub DocPageSectionContent
+{
+	my ($docs_ref, $page, $section) = @_; my %docs = %{$docs_ref};
+	if(defined($docs{$page})) {
+		if(defined($docs{$page}{$section})) {
+			return @{$docs{$page}{$section}};
+		}}
+	return ();
+}
+
+sub Test
+{
+	my %docs = DocNew();
+	DocAdd(\%docs, 'ls', 'synopsis', 'ls [<options>] [<files>]');
+	DocAdd(\%docs, 'ls', 'purpose', 'list the specified files or "."');
+	DocAdd(\%docs, 'echo', 'synopsis', 'echo [-n] <args>');
+	DocAdd(\%docs, 'echo', 'purpose', 'output the args, space-delimited');
+	my @pages = DocPages(\%docs);
+	print "\n";
+	print "page>>>" . join('', map { "$_\n"; } @pages) . "\n";
+	my @sections = DocPageSections(\%docs, 'ls');
+	print "sect>>>" . join('', map { "$_\n"; } @sections) . "\n";
+	my @sections = DocPageSections(\%docs, 'echo');
+	print "sect>>>" . join('', map { "$_\n"; } @sections) . "\n";
+	my @text = DocPageSectionContent(\%docs, 'ls', 'synopsis');
+	map { print "cont>>> ".$_."\n"; } @text;
+	my @text = DocPageSectionContent(\%docs, 'ls', 'purpose');
+	map { print "cont>>> ".$_."\n"; } @text;
+	my @text = DocPageSectionContent(\%docs, 'echo', 'synopsis');
+	map { print "cont>>> ".$_."\n"; } @text;
+	my @text = DocPageSectionContent(\%docs, 'echo', 'purpose');
+	map { print "cont>>> ".$_."\n"; } @text;
+
+	exit 0;
+}
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+
+my %SectionPriorities;
+{
+	my $pri = 0;
+	foreach my $sec (@Sections) {
+		$SectionPriorities{$sec} = $pri;
+		++$pri;
+	}
+}
+
+sub Inset
+{
+	my ($sought, @items) = @_;
+	foreach my $item (@items) {
+		if($sought eq $item) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+sub SectionNameToUse   # $tag-found-in-comment -- $name-to-use-for-tag
+{
+	my ($name) = @_;
+	if(defined($SectionNameInstead{$name})) {
+		return $SectionNameInstead{$name};
+	}
+	return $name;
+}
+
+sub IsSectionDetail
+{
+	my ($section, $detail) = @_;
+#	print("IsSectionDetail($section, $detail)\n");
+	if(defined($SectionDetails{$section})) {
+		my @details = @{$SectionDetails{$section}};
+		my $result = &Inset($detail, @details);
+#		print("IsSectionDetail($section, $detail) -> $result\n");
+		return $result;
+	}
+	return 0;
+}
+
+sub BiChomp
+{
+	my ($s) = @_;
+#	print "BEFORE: ".$s."\n";
+	$s =~ s/^\s*//sg;
+	$s =~ s/\s*$//sg;
+#	print "AFTER : ".$s."\n";
+	return $s;
+}
+
+sub EscapeForHtml
+{
+	my ($s) = @_;
+	$s =~ s/\&/\&amp\;/g;
+	$s =~ s/\"/\&quot\;/g;
+	$s =~ s/\</\&lt\;/g;
+	$s =~ s/\>/\&gt\;/g;
+	return $s;
+}
+
+sub RemoveLeadingBlankRect   # $text -- $text-without-leading-blank-rect
+{
+	my ($text) = @_;
+	my $indent;
+	my @lines = split("\n", $text);
+	foreach (@lines) {
+		next if m/^\s*$/;        # skip blank ones
+		m/^(\s*)/;
+		my $line_indent = length($1);
+		if(( ! defined($indent))
+		   || ($indent > $line_indent)) {
+			$indent = $line_indent;
+		}
+	}
+	return join("\n",
+				map {
+					substr($_, $indent);
+				} @lines);
+}
+
+sub OrderBySectionName  # <as sort> -- <=> for $SectionPriorities for $a and $b
+{
+	my $av = defined($SectionPriorities{$a}) ? $SectionPriorities{$a} : 100;
+	my $bv = defined($SectionPriorities{$b}) ? $SectionPriorities{$b} : 100;
+	my $res = $av <=> $bv;
+#	print("order: $a/$av vs $b/$bv -> $res\n");
+
+	if($res == 0) { $res = 1; } # maintain existing order is same-ordered data.
+#	print "$at/$atv and $bt/$btv -> $res\n";
+	return $res;
+}
+
+sub BySection    # \%item_a \%item_b -- ordering by item_*{'tag'}
+{
+#	my ($aref, $bref) = @_;
+	my %ah = %$a; #ref;
+	my %bh = %$b; # ref;
+	my $at = $ah{'tag'};
+	my $bt = $bh{'tag'};
+	my $atv = defined($SectionPriorities{$at}) ? $SectionPriorities{$at} : 100;
+	my $btv = defined($SectionPriorities{$bt}) ? $SectionPriorities{$bt} : 100;
+
+	my $res = $atv <=> $btv;
+	if($res == 0) { $res = 1; } # maintain existing order is same-ordered data.
+#	print "$at/$atv and $bt/$btv -> $res\n";
+	return $res;
+}
+
+sub GenerateRaw  # \%docs, $page -- $text
+{
+	my($docs_ref, $page) = @_;
+	my $text = "title: $page\n";
+
+	my @pages    = &DocPages($docs_ref);
+	my @sections = &DocPageSections($docs_ref, $page);
+	foreach my $section (@sections) {
+		my @content = &DocPageSectionContent($docs_ref, $page, $section);
+		foreach my $line (@content) {
+			$text .= "$section: $line\n";
+		}
+	}
+	return $text;
+}
+
+sub GenerateText  # \%docs, $page -- $text
+{
+	my($docs_ref, $page) = @_;
+	my $text;
+
+	my @pages    = &DocPages($docs_ref);
+	my @sections = &DocPageSections($docs_ref, $page);
+	foreach my $section (@sections) {
+		my @content = &DocPageSectionContent($docs_ref, $page, $section);
+		foreach my $line (@content) {
+			# format - adding leading tabs to content
+			$line =~ s/^/\t/;
+			$line =~ s/\n/\n\t/g;
+			# output section name and modified content
+			$text .= uc($section) . "\n" . $line . "\n";
+		}
+	}
+	return $text;
+}
+
+sub GenerateMan  # \%docs, $page -- $text
+{
+	my($docs_ref, $page) = @_;
+	my $text;
+	my @pages    = &DocPages($docs_ref);
+	my @sections = &DocPageSections($docs_ref, $page);
+	my $date     = strftime('%Y-%m-%d %H:%M:%S %Z', localtime);
+
+	$text= ('.\" @(#)'.$page.' '.$date." Talisman\n"
+			.'.TH '.$page.' 3 "'.$date.'" "Talisman" "Functions"'."\n");
+
+	my @func     = &DocPageSectionContent($docs_ref, $page, 'function');
+	my @purp     = &DocPageSectionContent($docs_ref, $page, 'purpose');
+	my $function = $func[0];
+	my $purpose  = $purp[0];
+
+	$text .= (".SH NAME\n"
+			  . $function . ' \\- ' . $purpose . "\n"
+			  );
+
+	foreach my $section (@sections) {
+		if(&Inset($section, 'function', 'purpose')) {
+			next;   # the function/purpose sections got merged earlier
+		}
+		$text .= ".SH " . uc($section) . "\n";
+		my @content = &DocPageSectionContent($docs_ref, $page, $section);
+		my $preformatted     = &IsSectionDetail($section, 'preformatted');
+		my $indented         = &IsSectionDetail($section, 'man:indented');
+		my $first_is_name    = &IsSectionDetail($section, 'first_is_name');
+		my $first_is_function= &IsSectionDetail($section, 'first_is_function');
+		$text .= ".IP\n"        if($indented);
+		$text .= ".nf\n.ft B\n" if($preformatted);
+#		else {			$text .= ".LP\n";		}
+#		if($first_is_name || $first_is_function) {
+#			$text .= ".IP <table width=80% border=0>\n";
+#		}
+		foreach my $chunk (@content) {
+			chomp($chunk);
+			# output section name and modified content
+			if($first_is_name || $first_is_function) {
+				$chunk =~ s/^\s*(\S+)\s*//;
+				my $name = $1;
+				$chunk =~ s/\s*\n\s*/ /s;
+#				if($first_is_function) {
+#					if(&DocPageExists($docs_ref, $name)) {
+#						$name = "<a href=\"$name.html\">$name</a>";
+#					}
+#				}
+				$text .= ".IP \\fI" . $name . "\\fP 1i\n";
+			}
+			$text .= $chunk . "\n" if($chunk =~ /\S/);
+		}
+#		if($first_is_function || $first_is_name) {
+#			$text .= "</table>\n";
+#		}
+		if($preformatted) {
+			$text .= ".ft R\n.fi\n";
+		} else {
+			$text .= "";
+		}
+	}
+	return $text;
+}
+
+sub GenerateHtml  # \%docs, $page -- $text
+{
+	my($docs_ref, $page) = @_;
+	my $text;
+	my @pages    = &DocPages($docs_ref);
+	my @sections = &DocPageSections($docs_ref, $page);
+
+	$text = ("<html>\n"
+			 . "<head>\n"
+			 . "<title>$page</title>\n"
+			 . ("<style type=\"text/css\">\n"
+				. "<!--\n"
+				. "BODY  { background-color: white; }\n"
+				. "-->\n"
+				. "</style>\n")
+			 . "</head>\n"
+			 . "<body>\n"
+			 . ("<table width=100% border=0><tr><td align=left width=20%>"
+				. "Talisman</td>"
+				. "<td align=center width=60%>"
+				. "Functions</td>"
+				. "<td align=right width=20%>"
+				. "Manual"
+				. "</td>\n"
+				. "</tr></table>\n")
+			 . "<h1 align=center>$page</h1>\n"
+			 );
+
+	$text .= "<dl>\n";
+
+	my @func     = &DocPageSectionContent($docs_ref, $page, 'function');
+	my @purp     = &DocPageSectionContent($docs_ref, $page, 'purpose');
+	my $function = $func[0];
+	my $purpose  = $purp[0];
+	$text .= ("<dt><h3>NAME</h3></dt>\n"
+			  . "<dd>"
+			  . "<b>" . $function . "</b>" . " -- " . $purpose
+			  . "</dd>\n"
+			  );
+
+	foreach my $section (@sections) {
+		if(&Inset($section, 'function', 'purpose')) {
+			next;   # the function/purpose sections got merged earlier
+		}
+		$text .= "<dt><h3>" . uc($section) . "</h3></dt>\n";
+		my @content = &DocPageSectionContent($docs_ref, $page, $section);
+		$text .= "<dd>\n";
+		my $preformatted     = &IsSectionDetail($section, 'preformatted');
+		my $first_is_name    = &IsSectionDetail($section, 'first_is_name');
+		my $first_is_function= &IsSectionDetail($section, 'first_is_function');
+		if($preformatted) {
+			$text .= "<pre>";
+		} else {
+			$text .= "<p>";
+		}
+		if($first_is_name || $first_is_function) {
+			$text .= "<table width=80% border=0>\n";
+		}
+		foreach my $chunk (@content) {
+			# output section name and modified content
+			if($first_is_name || $first_is_function) {
+				$chunk =~ s/^\s*(\S+)//;
+				my $name = $1;
+				if($first_is_function) {
+					if(&DocPageExists($docs_ref, $name)) {
+						$name = "<a href=\"$name.html\">$name</a>";
+					}
+				}
+				$text .= ("<tr valign=top>\n\t"
+						  . "<th align=left>$name</th>\n"
+						  . "<td width=2%></td>\n"
+						  . "\t<td>$chunk</td>\n</tr>\n");
+			} else {
+				$chunk = &EscapeForHtml($chunk);
+				if( ! $preformatted) {
+					$chunk =~ s/\n\s*\n/<\/p>\n<p>/gs;
+				}
+				$text .= $chunk;
+			}
+		}
+		if($first_is_function || $first_is_name) {
+			$text .= "</table>\n";
+		}
+		if($preformatted) {
+			$text .= "</pre>\n";
+		} else {
+			$text .= "</p>";
+		}
+		$text .= "</dd>\n";
+	}
+	$text .= "</dl>\n";
+
+	$text .= ("\n"
+			  . "</body>\n"
+			  . "</html>\n");
+
+	return $text;
+}
+
+sub ProcessFunction
+{
+	my ($docs_ref, $comment, $prototype) = @_;
+	my $function;
+#	print "\n-------------------\n" . $comment;
+	if($comment =~ /^\/[*\/]:/) {              #  if literate (start w/ "/*:")
+		my $is_static = 0;
+		my $availability_is_set = 0;
+		if($prototype =~ /^[^\(]*?([A-Za-z_0-9]+)\s*[\(]/) {
+			$function = $1;
+			&DocAdd($docs_ref, $function, 'function',  $function);
+			&DocAdd($docs_ref, $function, 'prototype', $prototype.';');
+			if($prototype =~ m/^\s*static\s+/) {
+				$is_static = 1;
+			}
+		}
+		#             /*   //  " *"  */
+		$comment =~ s/^(\/\*|\/\/| \*\/?)//gm;  # extract from comment
+		my($tag, $val);
+
+		$comment =~ s/^://;                    # drop initial ":"
+		my @entries = split("\n:", $comment);  # split on \n:
+		foreach my $entry (@entries) {
+			#               tag   :
+			if($entry =~ /^([^:]+):(.*)/s) {
+				my($tag, $val) = ($1, $2);
+				next if( ! $tag);               # skip if no tag
+				$tag = &SectionNameToUse($1);
+				# keep leading whitespace, paragraph breaks
+				$val =~ s/^[\s\n]*\n//gs;       # rm 1st blank lines
+				$val =~ s/\n\s*\n\s*\n/\n\n/gs; # compress newlines
+				$val =~ s/[\s\n]*$//gs;         # rm bottom spacing/nl
+				$val =~ s/\n\s*\n/\n\n/gs;      # rm inter-nl space
+				$val = &RemoveLeadingBlankRect($val);
+#				print("TAG $tag, VAL:\n$val\n");
+				next if( ! $val);
+				if ($tag eq 'availability') {
+					$availability_is_set = 1;
+				}
+				# still looks okay (or we'd've skipped) - add entry
+				&DocAdd($docs_ref, $function, $tag, $val);
+			} else {
+				print(STDERR "skipped bad '$entry' for $function\n");
+			}
+		}
+		if($is_static && ! $availability_is_set) {
+			&DocAdd($docs_ref, $function,
+					'availability', $availability{'static'});
+		}
+	} else {
+		# no comments?
+	}
+}
+
+sub ProcessFile   # $file $cppopts -- @hashes-of-arrays-for-each-function-etc.
+{
+	my ($file, $cppopts) = @_;
+	my %docs;					# save all the docs extracted. returned.
+
+	# drop all #include lines, then
+	# preprocess and cache the file. -P (no linenums) -C (keep comments)
+	my @cppout = `cat $file |
+                  grep -v '^[	 ]*#.*include' |
+                  cpp -P -C -Wtrigraphs $cppopts`;
+
+	my $text = join('', @cppout);
+
+	my ($revision, $date);
+	if($text =~ /[\$]Revision:\s*([0-9.]+)\s*[\$]/) {
+		$revision = $1;
+	}
+	if($text =~ /[\$]Date:\s*([0-9\/:. ]+)\s*[\$]/) {
+		$date = $1;
+	}
+
+	# strip GCC __attribute__ tags to make function detection more reliable
+	$text =~ s/__attribute__\(\([^)]*\)\)//gs; # a hack - might bother content
+	# find each defun     -------return-type-------- ( parms )
+	while($text =~ s/.*?^([A-Za-z_][A-Za-z0-9_* \t]+[(][^)]*[\)])//sm) {
+		my $proto = $1;
+#		print("proto: " . $proto . "\n");
+		if($text !~ /^\s*;/) {	# if this isn't a prototype....
+			$text =~ /(.*?)\n\{/s; # mark all up until the compounds stmt
+			my $comm = $1;
+			$comm =~ s/^\s*//;  # remove leading whitespace
+#			print $comm . "\n\n";
+			#                   /*          */ space
+			while($comm =~ s/^\/\*[^:][^*]*\*\/\s*//sm) {} # rm basic comments
+			# parse the literate comments
+			&ProcessFunction(\%docs, $comm, $proto);
+		}
+	}
+	return (\%docs, $revision, $date);
+}
+
+sub Main
+{
+	my $target_htmldir = $target_htmldir_default;
+	my $target_mandir  = $target_mandir_default;
+	my $make_pages = 1;
+	my $make_index = 0;
+	my $index_title = 'Guide';
+
+	my @files;
+	my @cpp_options;
+
+	for(my $i = 0 ; $i <= $#ARGV ; ++$i) {
+		my $arg = $ARGV[$i];
+		if(($arg eq '--output-dir') || ($arg eq '--html-dir')) {
+			$target_htmldir = $ARGV[++$i];
+		} elsif($arg eq '--man-dir') {
+			$target_mandir = $ARGV[++$i];
+		} elsif($arg eq '--index') {
+			$make_index = 1;
+		} elsif($arg eq '--index-only') {
+			$make_index = 1;
+			$make_pages = 0;
+		} elsif($arg eq '--index-title') {
+			$index_title = $ARGV[++$i];
+		} elsif($arg =~ /^-.*/) {
+			unshift(@cpp_options, $arg);
+		} else {
+			unshift(@files, $arg);
+		}
+	}
+	if ($target_htmldir && ! -d $target_htmldir) {
+		print(STDERR ("Error, target directory $target_htmldir_default\n"
+					  . "does not exist.  The option to set the target\n"
+					  . "directory is:  --html-dir <directory>\n"));
+		exit(1);
+	}
+	elsif($target_mandir && ! -d $target_mandir) {
+		print(STDERR ("Error, target directory $target_mandir_default\n"
+					  . "does not exist.  The option to set the target\n"
+					  . "directory is:  --man-dir <directory>\n"));
+		exit(1);
+	} else {
+		print "HTML directory: $target_htmldir\n";
+		print "MAN  directory: $target_mandir\n";
+	}
+
+	# all three of these are a set.
+	my %categories;
+	my %revisions;
+	my %rev_dates;
+
+	my $cpp_options = join(' ', @cpp_options);
+	my @docslist;
+	foreach my $file (@files) {
+		my ($docs_ref, $revision, $date) = &ProcessFile($file, $cpp_options);
+		$file =~ /\/?(\S+)[.]/;
+		my $category = $1;
+		my @pages = &DocPages($docs_ref);
+		$categories{$category} = \@pages ;
+		$revisions{$category} = $revision;
+		$rev_dates{$category} = $date;
+		push(@docslist, $docs_ref);
+	}
+
+	# now cough up the data in some format.
+	if($make_pages) {
+		foreach my $docs_ref (@docslist) {
+			my %docs = %{$docs_ref};
+			my @pages = &DocPages(\%docs);
+
+			foreach my $page (@pages)
+			{
+				if($target_htmldir) {
+					my $output = &GenerateHtml($docs_ref, $page);
+					my $filename = "$target_htmldir/$page.html";
+					if(open(OUT, "> $filename")) {
+						print(OUT $output);
+						close(OUT);
+					}
+				}
+				if($target_mandir) {
+					my $output = &GenerateMan($docs_ref, $page);
+					my $filename = "$target_mandir/$page.3";
+					if(open(OUT, "> $filename")) {
+						print(OUT $output);
+						close(OUT);
+					}
+				}
+			}
+		}
+	}
+#	print("\n");
+
+	if($make_index) {
+		my $filename = "$target_htmldir/index.html";
+		my $html;
+		my $cols = 3;
+		$html .= ("<html><head><title>$index_title</title></head>"
+				  . "<body bgcolor=white>\n"
+				  . "<h1 align=center>$index_title</h1>\n");
+		$html .= ("<table width=100%>\n");
+		foreach my $category (sort(keys(%categories))) {
+			my $rev  = $revisions{$category};
+			$rev =~ s/ /\&nbsp\;/;
+			my $date = $rev_dates{$category};
+			$date =~ s/ .*//;
+			$date =~ s/\//-/g;
+			$html .= ("<tr><th colspan=$cols>"
+					  . ("<table width=100%>"
+						 . "<tr valign=center>"
+						 . "<th><hr></th>"
+						 . ("<th width=20%>"
+							. $category . " " . $rev . "<br>"
+							. $date
+							. "</th>")
+						 . "<th><hr></th>"
+						 . "</tr></table>")
+					  . "</th></tr>\n");
+			my @docnames = @{$categories{$category}};
+			my $col = 1;
+			for(my $i = 0 ;  ; ++$i, ++$col) {
+				if($col > $cols) { $col = 1; }
+
+				last if(($i > $#docnames) && (1 == $col)); # bail if done.
+				my ($docname, $link, $kb) = ('', '', '');
+				$html .= ("<tr>") if(1 == $col);
+				if($i <= $#docnames) {
+					$docname  = $docnames[$i];
+					if($docname) {
+						$link    = "<a href=\"$docname.html\">$docname</a>";
+						my $bytes=(stat("$target_htmldir/$docname.html"))[7];
+						$kb = sprintf("%.1f", $bytes / 1024);
+						$kb =~ s/0/<small>0<\/small>/g;
+						$kb = '<i>('.$kb.' <small>KB</small>)</i>';
+					}
+				}
+				$html .= ("\t<td>$link $kb</td>");
+				$html .= ("</tr>\n") if($col == $cols);
+			}
+		}
+		$html .= ("</table></body></html>\n");
+		if(open(OUT, "> $filename")) {
+			print(OUT $html);
+			close(OUT);
+		}
+	}
+	return 0;
+}
+
+exit(&Main());
+
+#----------------------------------------------------eof
+
